@@ -1,0 +1,36 @@
+# รันเทสต์อัตโนมัติทุกครั้งที่ push หรือเปิด pull request (แนวเดียวกับ test.yml ของ MovieHub)
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:                                    # ฐานข้อมูลทิ้งได้สำหรับ integration test
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: localdev
+          POSTGRES_DB: bookreview_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod                  # ใช้เวอร์ชันเดียวกับ go.mod
+      - run: go vet ./...
+      - run: go build -o app .                     # คำสั่งเดียวกับ Render
+      - run: go test -count=1 ./...
+        env:
+          TEST_DATABASE_URL: postgres://postgres:localdev@localhost:5432/bookreview_test
+      - name: db-test.sql (constraint ของ schema)
+        env:
+          PGPASSWORD: localdev
+        run: |
+          psql -h localhost -U postgres -d bookreview_test -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+          psql -h localhost -U postgres -d bookreview_test -v ON_ERROR_STOP=1 -f schema.sql -f seed.sql
+          psql -h localhost -U postgres -d bookreview_test -f db-test.sql | tee result.txt
+          grep -qE '^ +[0-9]+ \| +0$' result.txt

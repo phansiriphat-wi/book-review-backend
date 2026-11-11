@@ -1,0 +1,17 @@
+# Render Blueprint: New > Blueprint > เลือก repo นี้ (หรือสร้าง Web Service เองด้วยค่าเดียวกัน)
+services:
+  - type: web
+    name: book-review-api
+    runtime: go
+    plan: free
+    region: singapore            # ใกล้ไทยที่สุด
+    buildCommand: go build -o app .
+    startCommand: ./app
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL        # Supabase > Connect > Session pooler (ดู README)
+        sync: false
+      - key: JWT_SECRET          # Render สุ่มค่ายาวให้เอง (ต้อง >= 32 ตัวอักษร)
+        generateValue: true
+      - key: ALLOWED_ORIGINS     # โดเมน Vercel เช่น https://book-review-xxx.vercel.app (หลายค่าคั่นด้วยจุลภาค ไม่มี / ท้าย)
+        sync: false

@@ -1,0 +1,12 @@
+# ข้อมูลลับ ห้าม commit
+.env
+.env.*
+!.env.example
+
+# ไฟล์ที่ build ได้
+/app
+/bookreview
+/bookreview-api
+*.exe
+
+.DS_Store
