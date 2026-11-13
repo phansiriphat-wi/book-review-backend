@@ -5,7 +5,7 @@ import { writeFileSync } from 'node:fs';
 
 const BASE = process.env.OPENLIBRARY_BASE || 'https://openlibrary.org';   // เปลี่ยนได้เฉพาะตอนทดสอบกับ server จำลอง
 const COVERS = 'https://covers.openlibrary.org/b/id';
-const PER_CATEGORY = 10;
+const PER_CATEGORY = 50;
 const OUT = new URL('./seed.sql', import.meta.url);
 
 // ต้องตรงกับ INSERT INTO categories ใน schema.sql (name ผิดจะติด foreign key ตอนรัน seed.sql)

@@ -443,6 +443,116 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("profile: me has counts, my reviews only, edit name only", func(t *testing.T) {
+		a.expect(a.call("POST", "/api/books/OL100W/reviews", bob, map[string]any{"rating": 4, "comment": "Profile page test review."}), 201, "bob reviews again")
+		me := a.expect(a.call("GET", "/api/auth/me", bob, nil), 200, "me bob")
+		if me.Body["reviewCount"] != float64(1) || me.Body["wishlistCount"] == nil {
+			t.Fatalf("me counts: %s", me.Raw)
+		}
+		mine := a.expect(a.call("GET", "/api/me/reviews", bob, nil), 200, "my reviews")
+		if mine.Body["total"] != float64(1) || len(items(mine)) != 1 || mine.Body["avgRating"] == nil {
+			t.Fatalf("my reviews: %s", mine.Raw)
+		}
+		first := items(mine)[0].(map[string]any)
+		if first["userId"] != me.Body["id"] || first["book"].(map[string]any)["title"] != "The Test Dragon" {
+			t.Fatalf("my review shape: %s", mine.Raw)
+		}
+		// อีกคนเห็นแต่รีวิวของตัวเอง (alice ลบรีวิวไปแล้ว = ว่าง)
+		if r := a.expect(a.call("GET", "/api/me/reviews", alice, nil), 200, "alice reviews"); r.Body["total"] != float64(0) || len(items(r)) != 0 {
+			t.Fatalf("alice sees others: %s", r.Raw)
+		}
+		for _, c := range [][2]string{{"PATCH", "/api/auth/profile"}, {"POST", "/api/auth/change-password"}, {"GET", "/api/me/reviews"}} {
+			if r := a.call(c[0], c[1], "", map[string]any{}); r.Status != 401 {
+				t.Errorf("guest %s %s: %d", c[0], c[1], r.Status)
+			}
+		}
+
+		// ส่ง id / role / email มาด้วย ต้องถูกทิ้ง แก้ได้แค่ชื่อของตัวเอง
+		r := a.expect(a.call("PATCH", "/api/auth/profile", bob, map[string]any{
+			"name": "  Bobby  ", "role": "admin", "id": 1, "email": "hacked@example.com"}), 200, "update profile")
+		if r.Body["name"] != "Bobby" || r.Body["role"] != "member" || r.Body["email"] != "bob@example.com" || r.Body["id"] != me.Body["id"] {
+			t.Fatalf("profile update: %s", r.Raw)
+		}
+		var others int
+		pool.QueryRow(context.Background(), `SELECT count(*) FROM users WHERE name = 'Bobby' OR email = 'hacked@example.com' OR (role = 'admin' AND email = 'bob@example.com')`).Scan(&others)
+		if others != 1 {
+			t.Fatalf("profile touched other rows/fields: %d", others)
+		}
+		if a.expect(a.call("GET", "/api/auth/me", bob, nil), 200, "me after").Body["name"] != "Bobby" {
+			t.Fatal("name not saved")
+		}
+		if r := a.call("PATCH", "/api/auth/profile", bob, map[string]any{"name": "   "}); r.Status != 400 || errCode(r) != "BAD_NAME" {
+			t.Fatalf("blank name: %s", r.Raw)
+		}
+		if r := a.call("PATCH", "/api/auth/profile", bob, map[string]any{"name": strings.Repeat("ก", 51)}); errCode(r) != "BAD_NAME" {
+			t.Fatalf("long name: %s", r.Raw)
+		}
+		// ไม่มีใครเปลี่ยนชื่อคนอื่นได้ เพราะไม่มีช่องให้ระบุ id เลย: admin แก้ก็โดนแค่ชื่อตัวเอง
+		a.expect(a.call("PATCH", "/api/auth/profile", admin, map[string]any{"name": "Carol A.", "id": me.Body["id"]}), 200, "admin edits self")
+		if a.call("GET", "/api/auth/me", bob, nil).Body["name"] != "Bobby" {
+			t.Fatal("admin changed bob's name")
+		}
+	})
+
+	t.Run("change password: verify current, bcrypt, new token, old password stops working", func(t *testing.T) {
+		cp := func(token string, cur, next string) resp {
+			return a.call("POST", "/api/auth/change-password", token, map[string]string{"currentPassword": cur, "newPassword": next})
+		}
+		for _, c := range []struct{ cur, next, code string }{
+			{"", "new-pass-123", "MISSING_FIELDS"},
+			{"bob-pass-12", "", "MISSING_FIELDS"},
+			{"bob-pass-12", "short", "BAD_PASSWORD"},
+			{"bob-pass-12", "bob-pass-12", "SAME_PASSWORD"},
+			{"not-my-pass", "new-pass-123", "WRONG_PASSWORD"},
+		} {
+			if r := cp(bob, c.cur, c.next); r.Status != 400 || errCode(r) != c.code {
+				t.Fatalf("%+v: %d %s", c, r.Status, r.Raw)
+			}
+		}
+		// รหัสปัจจุบันผิด = 400 ไม่ใช่ 401 ตั๋วเดิมยังใช้ได้
+		a.expect(a.call("GET", "/api/auth/me", bob, nil), 200, "token still valid after wrong current")
+
+		var before string
+		pool.QueryRow(context.Background(), `SELECT password_hash FROM users WHERE email = 'bob@example.com'`).Scan(&before)
+		r := a.expect(cp(bob, "bob-pass-12", "bob-new-pass-34"), 200, "change password")
+		if strings.Contains(r.Raw, "$2a$") || strings.Contains(r.Raw, "bob-new-pass-34") || strings.Contains(r.Raw, "password") {
+			t.Fatalf("secret leaked: %s", r.Raw)
+		}
+		fresh, _ := r.Body["token"].(string)
+		if fresh == "" || r.Body["user"].(map[string]any)["role"] != "member" {
+			t.Fatalf("change password response: %s", r.Raw)
+		}
+		var after string
+		pool.QueryRow(context.Background(), `SELECT password_hash FROM users WHERE email = 'bob@example.com'`).Scan(&after)
+		if after == before || !strings.HasPrefix(after, "$2a$") || strings.Contains(after, "bob-new-pass-34") {
+			t.Fatalf("hash not updated safely: %q", after)
+		}
+		a.expect(a.call("GET", "/api/auth/me", fresh, nil), 200, "new token works")
+		if r := a.call("POST", "/api/auth/login", "", map[string]string{"email": "bob@example.com", "password": "bob-pass-12"}); r.Status != 401 {
+			t.Fatalf("old password still works: %d", r.Status)
+		}
+		bob = login("bob@example.com", "bob-new-pass-34")
+		// alice ใช้ตั๋วของตัวเอง เปลี่ยนรหัสของ bob ไม่ได้ (ตรวจกับรหัสของ alice)
+		if r := cp(alice, "bob-new-pass-34", "stolen-pass-99"); errCode(r) != "WRONG_PASSWORD" {
+			t.Fatalf("alice vs bob password: %s", r.Raw)
+		}
+		login("bob@example.com", "bob-new-pass-34")
+	})
+
+	t.Run("CORS allows PATCH for profile", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/api/auth/profile", nil)
+		req.Header.Set("Origin", "http://localhost:3000")
+		req.Header.Set("Access-Control-Request-Method", "PATCH")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if !strings.Contains(res.Header.Get("Access-Control-Allow-Methods"), "PATCH") {
+			t.Fatalf("PATCH not allowed: %v", res.Header)
+		}
+	})
+
 	t.Run("CORS for frontend origin", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/api/wishlist", nil)
 		req.Header.Set("Origin", "http://localhost:3000")

@@ -16,6 +16,7 @@ type ReviewBook struct {
 	ID             int64   `json:"id"`
 	Title          string  `json:"title"`
 	OpenLibraryKey *string `json:"openlibraryKey"`
+	CoverURL       *string `json:"coverUrl"`
 }
 
 type Review struct {
@@ -27,7 +28,7 @@ type Review struct {
 	CreatedAt time.Time   `json:"createdAt"`
 	UpdatedAt time.Time   `json:"updatedAt"`
 	User      ReviewUser  `json:"user"`
-	Book      *ReviewBook `json:"book,omitempty"` // มีเฉพาะ GET /api/admin/reviews
+	Book      *ReviewBook `json:"book,omitempty"` // มีใน GET /api/admin/reviews และ GET /api/me/reviews
 }
 
 type ReviewSummary struct {
@@ -43,7 +44,7 @@ func scanReviews(rows pgx.Rows, withBook bool) ([]Review, error) {
 		dest := []any{&r.ID, &r.UserID, &r.BookID, &r.Rating, &r.Comment, &r.CreatedAt, &r.UpdatedAt, &r.User.Name}
 		var b ReviewBook
 		if withBook {
-			dest = append(dest, &b.Title, &b.OpenLibraryKey)
+			dest = append(dest, &b.Title, &b.OpenLibraryKey, &b.CoverURL)
 		}
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
@@ -153,11 +154,40 @@ func (s *Store) ListAllReviews(ctx context.Context, q string, page, size int) (P
 	}
 	rows, err := s.Pool.Query(ctx,
 		`SELECT r.id, r.user_id, r.book_id, r.rating, r.comment, r.created_at, r.updated_at, u.name,
-		        b.title, b.openlibrary_key
+		        b.title, b.openlibrary_key, b.cover_url
 		 FROM reviews r JOIN users u ON u.id = r.user_id JOIN books b ON b.id = r.book_id
 		 WHERE $1 = '' OR r.comment ILIKE $2 OR b.title ILIKE $2 OR u.name ILIKE $2
 		 ORDER BY r.created_at DESC, r.id DESC
 		 LIMIT $3 OFFSET $4`, q, likePattern(q), size, (page-1)*size)
+	if err != nil {
+		return out, err
+	}
+	out.Items, err = scanReviews(rows, true)
+	return out, err
+}
+
+// UserReviewPage คือรีวิวของผู้ใช้ 1 คน แบบแบ่งหน้า พร้อมคะแนนเฉลี่ยที่คนนั้นให้ (ทุกรีวิว ไม่ใช่เฉพาะหน้านี้)
+type UserReviewPage struct {
+	Page[Review]
+	AvgRating *float64 `json:"avgRating"`
+}
+
+// ListUserReviews รีวิวของคนที่ถือตั๋ว ใหม่สุดก่อน พร้อมชื่อและปกหนังสือ (GET /api/me/reviews)
+func (s *Store) ListUserReviews(ctx context.Context, userID int64, page, size int) (UserReviewPage, error) {
+	out := UserReviewPage{Page: Page[Review]{Items: []Review{}, Page: page, PageSize: size}}
+	err := s.Pool.QueryRow(ctx,
+		`SELECT count(*), round(avg(rating), 1)::float8 FROM reviews WHERE user_id = $1`, userID).
+		Scan(&out.Total, &out.AvgRating)
+	if err != nil {
+		return out, err
+	}
+	rows, err := s.Pool.Query(ctx,
+		`SELECT r.id, r.user_id, r.book_id, r.rating, r.comment, r.created_at, r.updated_at, u.name,
+		        b.title, b.openlibrary_key, b.cover_url
+		 FROM reviews r JOIN users u ON u.id = r.user_id JOIN books b ON b.id = r.book_id
+		 WHERE r.user_id = $1
+		 ORDER BY r.created_at DESC, r.id DESC
+		 LIMIT $2 OFFSET $3`, userID, size, (page-1)*size)
 	if err != nil {
 		return out, err
 	}

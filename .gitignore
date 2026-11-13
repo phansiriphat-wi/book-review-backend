@@ -10,3 +10,4 @@
 *.exe
 
 .DS_Store
+.jwt_secret

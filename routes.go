@@ -21,6 +21,9 @@ func routes(h *handler.Handler, tickets *auth.Issuer, origins []string) http.Han
 	mux.HandleFunc("POST /api/auth/register", h.Register)
 	mux.HandleFunc("POST /api/auth/login", h.Login)
 	mux.HandleFunc("GET /api/auth/me", login(h.Me))
+	mux.HandleFunc("PATCH /api/auth/profile", login(h.UpdateProfile))
+	mux.HandleFunc("POST /api/auth/change-password", login(h.ChangePassword))
+	mux.HandleFunc("GET /api/me/reviews", login(h.MyReviews))
 
 	// หนังสือ: {id} = เลขในระบบ หรือรหัส Open Library เช่น OL27448W
 	mux.HandleFunc("GET /api/categories", h.Categories)

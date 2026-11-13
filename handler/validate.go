@@ -24,12 +24,26 @@ func trimPtr(p *string) *string {
 
 // validateRegister ตรวจข้อมูลสมัครสมาชิก (กติกาเดียวกับ week6-lab ปรับ displayName เป็น name)
 func validateRegister(email, password, name string) (code, message string) {
-	switch {
-	case !strings.Contains(email, "@") || strings.HasPrefix(email, "@") || len(email) > 255:
+	if !strings.Contains(email, "@") || strings.HasPrefix(email, "@") || len(email) > 255 {
 		return "BAD_EMAIL", "รูปแบบอีเมลไม่ถูกต้อง"
-	case utf8.RuneCountInString(password) < 8 || len(password) > 72:
+	}
+	if code, msg := validatePassword(password); code != "" {
+		return code, msg
+	}
+	return validateName(name)
+}
+
+// validatePassword กติการหัสผ่านเดียวกันทั้งตอนสมัครและตอนเปลี่ยนรหัส (bcrypt รับได้ไม่เกิน 72 ไบต์)
+func validatePassword(password string) (code, message string) {
+	if utf8.RuneCountInString(password) < 8 || len(password) > 72 {
 		return "BAD_PASSWORD", "รหัสผ่านต้องยาว 8 ตัวอักษรขึ้นไป และไม่เกิน 72 ไบต์"
-	case name == "" || utf8.RuneCountInString(name) > 50:
+	}
+	return "", ""
+}
+
+// validateName ชื่อที่แสดง 1–50 ตัวอักษร (ตรงกับ VARCHAR(50) ใน schema.sql) ใช้ทั้งสมัครและแก้โปรไฟล์
+func validateName(name string) (code, message string) {
+	if name == "" || utf8.RuneCountInString(name) > 50 {
 		return "BAD_NAME", "ต้องมีชื่อ และยาวไม่เกิน 50 ตัวอักษร"
 	}
 	return "", ""
